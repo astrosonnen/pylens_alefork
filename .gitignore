@@ -1,0 +1,14 @@
+# LaTeX cruft:
+*.pdf
+*.dvi
+*.log
+*.aux
+*.pyc
+*.dat
+*.bbl
+*.blg
+*.ps
+
+# Python cruft:
+.ipynb_checkpoints
+*.pyc

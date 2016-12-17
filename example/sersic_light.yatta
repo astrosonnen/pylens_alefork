@@ -1,0 +1,26 @@
+data_dir: ./
+output_dir: ./
+filename: SL2SJ021411-040502
+science_tag: _sci.fits
+err_tag: _RMS.fits
+psf_tag: _psf.fits
+err_type: SIGMA # VAR or SIGMA (default is VAR)
+rmax: 15.
+Nwalkers: 30
+Nsteps: 300
+filters: u, g, r, i, z
+zeropoints: 30., 30., 30., 30., 30.
+fitbands: u, g, r, i, z
+rgbbands: i, r, g
+rgbname: deV_model.png
+
+# MODELS
+
+light_model Sersic
+x 20. 18. 22. 0.1 1
+y 20. 18. 22. 0.1 1
+pa -17.719355 -90.000000 90.000000 5.000000 1
+q 1. 0.400000 1.000000 0.030000 1
+re 6. 3.000000 20.000000 1.000000 1
+n 4.000000 -1 -1 -1 0
+

@@ -7,7 +7,7 @@ psf_tag: _psf.fits
 err_type: SIGMA # VAR or SIGMA (default is VAR)
 rmax: 15.
 Nwalkers: 30
-Nsteps: 100
+Nsteps: 300
 filters: u, g, r, i, z
 zeropoints: 30., 30., 30., 30., 30.
 fitbands: u, g, r, i, z

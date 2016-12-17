@@ -29,6 +29,11 @@ rgbbands = [band for band in config['rgbbands']]
 #defines model parameters
 par2index = {}
 index2par = {}
+
+nlight = len(config['light_components'])
+nsource = len(config['source_components'])
+nlens = len(config['lens_components'])
+
 ncomp = 0
 npar = 0
 for comp in config['light_components']:
@@ -212,10 +217,19 @@ if config['do_fit'] == 'YES':
 
     nwalkers = len(start)
 
+    fakemags = {}
+    for band in fitbands:
+        maglist = []
+        for light in light_models[band]:
+            maglist.append(99.)
+        for source in source_models[band]:
+            maglist.append(99.)
+        fakemags[band] = maglist
+
     def logpfunc(allpars):
         lp = logprior(allpars)
         if not np.isfinite(lp):
-            return -np.inf
+            return -np.inf, fakemags
 
         for j in range(0, npars):
             pars[j].value = allpars[j]
@@ -226,34 +240,51 @@ if config['do_fit'] == 'YES':
 
         xl, yl = pylens.getDeflections(lens_models, (X, Y))
 
+        mags = {}
         for band in fitbands:
 
             modlist = []
+            maglist = []
 
             for light in light_models[band]:
                 light.setPars()
+                light.amp = 1.
                 lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
                 modlist.append((lmodel/sigmas[band]).ravel()[mask_r])
 
             for source in source_models[band]:
                 source.setPars()
+                source.amp = 1.
                 smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
                 modlist.append((smodel/sigmas[band]).ravel()[mask_r])
 
             modarr = np.array(modlist).T
 
             if np.isnan(modarr).any():
-                return -1e300
+
+                return -1e300, fakemags
 
             amps, chi = nnls(modarr, (images[band]/sigmas[band]).ravel()[mask_r])
+
+            i = 0
+            for light in light_models[band]:
+                light.amp *= amps[i]
+                maglist.append(light.Mag(zp[band]))
+                i += 1
+            for source in source_models[band]:
+                source.amp *= amps[i]
+                maglist.append(source.Mag(zp[band]))
+                i += 1
+
+            mags[band] = maglist
 
             logp = -0.5*chi
 
             if logp != logp:
-                return -np.inf
+                return -np.inf, fakemags
             sumlogp += logp
 
-        return sumlogp
+        return sumlogp, mags
 
     sampler = emcee.EnsembleSampler(nwalkers, npars, logpfunc)
 
@@ -262,6 +293,7 @@ if config['do_fit'] == 'YES':
     sampler.run_mcmc(start, config['Nsteps'])
 
     chain = sampler.chain
+    magschain = sampler.blobs
 
     ML = sampler.flatlnprobability.argmax()
 
@@ -271,6 +303,21 @@ if config['do_fit'] == 'YES':
     outchain = {}
     for i in range(npars):
         outchain[index2par[i]] = chain[:, :, i]
+
+    for i in range(nlight):
+        for band in fitbands:
+            outchain['light%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
+    for i in range(nsource):
+        for band in fitbands:
+            outchain['source%d.mag_%s'] = np.zeros((nwalkers, config['Nsteps']))
+
+    for i in range(config['Nsteps']):
+        for j in range(nwalkers):
+            for band in fitbands:
+                for l in range(nlight):
+                    outchain['light%d.mag_%s'%(l+1, band)][j, i] = magschain[i][j][band][l]
+                for s in range(nsource):
+                    outchain['source%d.mag_%s'%(s+1, band)][j, i] = magschain[i][j][band][nlight+s]
 
     output['chain'] = outchain
 

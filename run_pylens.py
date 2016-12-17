@@ -331,6 +331,7 @@ for lens in lens_models:
 xl, yl = pylens.getDeflections(lens_models, (X, Y))
 
 sumlogp = 0.
+mags = {}
 for band in filters:
 
     light_ml_model[band] = []
@@ -338,13 +339,17 @@ for band in filters:
 
     modlist = []
 
+    mags[band] = []
+
     for light in light_models[band]:
         light.setPars()
+        light.amp = 1.
         lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
         modlist.append((lmodel/sigmas[band]).ravel()[mask_r])
 
     for source in source_models[band]:
         source.setPars()
+        source.amp = 1.
         smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
         modlist.append((smodel/sigmas[band]).ravel()[mask_r])
 
@@ -359,12 +364,20 @@ for band in filters:
     for light in light_models[band]:
         lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
         lmodel *= amps[n]
+        light.amp *= amps[n]
+        
+        mags[band].append(light.Mag(zp[band]))
+        
         light_ml_model[band].append(lmodel)
         n += 1
 
     for source in source_models[band]:
         smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
         smodel *= amps[n]
+        smodel.amp *= amps[n]
+
+        mags[band].append(source.Mag(zp[band]))
+
         source_ml_model[band].append(smodel)
         n += 1
 
@@ -455,6 +468,8 @@ for light in light_pardicts:
                 lname = config['light_components'][ncomp]['pars'][par]['link']
                 npar = par2index[lname]
                 conflines.append('%s %f %f %f %f 1 %s\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar], lname))
+    for band in filters:
+        conflines.append('mag_%s %3.2f\n'%(band, mags[band][ncomp]))
     ncomp += 1
 
 ncomp = 0
@@ -473,6 +488,8 @@ for source in source_pardicts:
                 lname = config['source_components'][ncomp]['pars'][par]['link']
                 npar = par2index[lname]
                 conflines.append('%s %f %f %f %f 1 %s\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar], lname))
+    for band in filters:
+        conflines.append('mag_%s %3.2f\n'%(band, mags[band][nlight+ncomp]))
     ncomp += 1
 
 ncomp = 0

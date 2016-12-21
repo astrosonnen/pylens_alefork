@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import optimize
 from scipy.optimize import fmin_slsqp
-from pylens import convolve
+import convolve
 import pymc, emcee
 from scipy.stats import truncnorm
 

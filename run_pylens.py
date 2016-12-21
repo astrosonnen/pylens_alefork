@@ -406,13 +406,13 @@ for band in bandshere:
         smodel += source
     source_list.append(smodel)
 
-plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['rgbname'])
+plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['rgbname'])
 
 output['light_ml_model'] = light_ml_model
 output['source_ml_model'] = source_ml_model
 output['logp'] = sumlogp
 
-f = open(config['outname'], 'w')
+f = open(config['output_dir']+'/'+config['outname'], 'w')
 pickle.dump(output, f)
 f.close()
 
@@ -515,7 +515,7 @@ for lens in source_pardicts:
 conflines.append('\n')
 conflines.append('logp %f\n'%sumlogp)
 
-f = open(configfile+'.out', 'w')
+f = open(config['output_dir']+'/'+configfile+'.out', 'w')
 f.writelines(conflines)
 f.close()
 

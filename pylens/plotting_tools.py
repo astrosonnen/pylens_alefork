@@ -1,8 +1,6 @@
 import pylab
 import numpy as np
 import Image, ImageDraw, ImageFont
-from yattaconfig import *
-
 
 
 def make_rgbarray(images, cuts):

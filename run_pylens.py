@@ -386,7 +386,7 @@ for band in filters:
     for source in source_models[band]:
         smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
         smodel *= amps[n]
-        smodel.amp *= amps[n]
+        source.amp *= amps[n]
 
         mags[band].append(source.Mag(zp[band]))
 

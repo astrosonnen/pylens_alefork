@@ -96,7 +96,19 @@ for band in config['filters']:
     else:
         df
 
-    psf = pyfits.open(config['data_dir']+'/'+config['filename']+'_%s'%band+config['psf_tag'])[0].data.copy()
+    psf_file = pyfits.open(config['data_dir']+'/'+config['filename']+'_%s'%band+config['psf_tag'])
+    nhdu = len(psf_file)
+    found = False
+    n = 0
+    while not found and n < nhdu:
+        if psf_file[n].data is not None:
+            psf = psf_file[n].data.copy()
+            found = True
+        else:
+            n += 1
+    if not found:
+        df
+
     m = (psf[:2].mean()+psf[-2:].mean()+psf[:,:2].mean()+psf[:,-2:].mean())/4.
     psf -= m
     psf /= psf.sum()
@@ -309,7 +321,7 @@ if config['do_fit'] == 'YES':
             outchain['light%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
     for i in range(nsource):
         for band in fitbands:
-            outchain['source%d.mag_%s'] = np.zeros((nwalkers, config['Nsteps']))
+            outchain['source%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
 
     for i in range(config['Nsteps']):
         for j in range(nwalkers):

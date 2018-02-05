@@ -17,7 +17,7 @@ images = {}
 sigmas = {}
 psfs = {}
 light_models = {}
-source_models = {}
+sourcetemp_models = {}
 lens_models = []
 zp = {}
 pars = []
@@ -50,7 +50,7 @@ for comp in config['light_components']:
             npar += 1
 
 ncomp = 0
-for comp in config['source_components']:
+for comp in config['source_templates']:
     ncomp += 1
     for par in comp['pars']:
         parpar = comp['pars'][par]
@@ -58,8 +58,8 @@ for comp in config['source_components']:
             pars.append(pymc.Uniform(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
             bounds.append((parpar['low'], parpar['up']))
             steps.append(parpar['step'])
-            par2index['source'+str(ncomp)+'.'+par] = npar
-            index2par[npar] = 'source'+str(ncomp)+'.'+par
+            par2index['sourcetemp'+str(ncomp)+'.'+par] = npar
+            index2par[npar] = 'sourcetemp'+str(ncomp)+'.'+par
             npar += 1
 
 ncomp = 0
@@ -157,10 +157,11 @@ for comp in config['light_components']:
     light_pardicts.append(pars_here)
 
 ncomp = 1
-source_pardicts = []
-for comp in config['source_components']:
+sourcetemp_pardicts = []
+sourcetemp_templates = []
+for comp in config['source_templates']:
 
-    name = 'source%d'%ncomp
+    name = 'sourcetemp%d'%ncomp
 
     pars_here = {}
     for par in comp['pars']:
@@ -174,24 +175,24 @@ for comp in config['source_components']:
 
     ncomp += 1
 
-    source_pardicts.append(pars_here)
+    sourcetemp_pardicts.append(pars_here)
+    sourcetemp_templates.append(comp['tempname'])
 
-for band in config['filters']:
+for pardict, template in zip(sourcetemp_pardicts, sourcetemp_templates):
 
-    light_models[band] = []
-    source_models[band] = []
+    source = SBModels.SersicTemplate('source', pardict, template=template, filters=config['filters'], filter_prefix=config['filter_prefix'], zp=zp)
+    source.convolve = {}
+    for band in config['filters']:
+        source.convolve[band] = convolve.convolve(images[band], psfs[band])[1]
+    sourcetemp_models.append(source)
 
-    for pardict in light_pardicts:
+for pardict, colordict, band in zip(light_pardicts, light_colordicts, light_mainbands):
 
-        light = SBModels.Sersic('light', pardict)
-        light.convolve = convolve.convolve(images[band], psfs[band])[1]
-        light_models[band].append(light)
-
-    for pardict in source_pardicts:
-
-        source = SBModels.Sersic('source', pardict)
-        source.convolve = convolve.convolve(images[band], psfs[band])[1]
-        source_models[band].append(source)
+    light = SBModels.SersicColors('light', pardict, colordict, main_band=band, zp=zp)
+    light.convolve = {}
+    for band in config['filters']:
+        light.convolve[band] = convolve.convolve(images[band], psfs[band])[1]
+    light_models.append(light)
 
 ny, nx = images[filters[0]].shape
 X, Y = np.meshgrid(np.arange(1.*nx), np.arange(1.*ny))
@@ -221,7 +222,7 @@ if config['do_fit'] == 'YES':
     start = np.array(start).T
 
     npars = len(pars)
-
+   
     def logprior(allpars):
         for i in range(npars):
             if allpars[i] < bounds[i][0] or allpars[i] > bounds[i][1]:
@@ -230,14 +231,25 @@ if config['do_fit'] == 'YES':
 
     nwalkers = len(start)
 
-    fakemags = {}
-    for band in fitbands:
-        maglist = []
-        for light in light_models[band]:
-            maglist.append(99.)
-        for source in source_models[band]:
-            maglist.append(99.)
-        fakemags[band] = maglist
+    fakemags = []
+    for comp in light_models + sourcetemp_models:
+        magdic = {}
+        for band in fitbands:
+            magdic[band] = 99.
+        fakemags.append(magdic)
+
+    ncomp = len(light_models) + len(sourcetemp_models)
+
+    nfitbands = len(fitbands)
+
+    modelstack = np.zeros((nfitbands * ny, nx))
+    datastack = 0. * modelstack
+    sigmastack = 0. * modelstack
+    maskstack = 0. * modelstack
+    for i in range(nfitbands):
+        datastack[i*ny: (i+1)*ny, :] = images[fitbands[i]]
+        sigmastack[i*ny: (i+1)*ny, :] = sigmas[fitbands[i]]
+        maskstack[i*ny: (i+1)*ny, :] = mask
 
     def logpfunc(allpars):
         lp = logprior(allpars)
@@ -254,50 +266,53 @@ if config['do_fit'] == 'YES':
         xl, yl = pylens.getDeflections(lens_models, (X, Y))
 
         mags = {}
-        for band in fitbands:
 
-            modlist = []
-            maglist = []
+        modlist = []
 
-            for light in light_models[band]:
-                light.setPars()
-                light.amp = 1.
-                lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
-                modlist.append((lmodel/sigmas[band]).ravel()[mask_r])
+        for light in light_models:
+            lmodel = 0. * imagestack
 
-            for source in source_models[band]:
-                source.setPars()
-                source.amp = 1.
-                smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
-                modlist.append((smodel/sigmas[band]).ravel()[mask_r])
+            light.setPars()
+            light.amp = 1.
+            lpix = light.pixeval(X, Y, bands=fitbands)
+            for i in range(nfitbands):
+                lmodel[i*ny: (i+1)*ny, :] = convolve.convolve(lpix, light.convolve, False)[0]
+            modlist.append((lmodel/sigmastack)[maskstack])
 
             modarr = np.array(modlist).T
 
-            if np.isnan(modarr).any():
+        for source in sourcetemp_models:
+            smodel = 0. * imagestack
+            source.setPars()
+            source.getColors()
+            source.amp = 1.
+            spix = source.pixeval(xl, yl, bands=fitbands)
+            for i in range(nfitbands):
+                smodel[i*ny: (i+1)*ny, :] = convolve.convolve(spix[fitbands[i]], source.convolve[fitbands[i]], False)[0]
+            modlist.append((smodel/sigmastack)[maskstack])
 
-                return -1e300, fakemags
+        if np.isnan(modarr).any():
 
-            amps, chi = nnls(modarr, (images[band]/sigmas[band]).ravel()[mask_r])
+            return -1e300, fakemags
 
-            i = 0
-            for light in light_models[band]:
-                light.amp *= amps[i]
-                maglist.append(light.Mag(zp[band]))
-                i += 1
-            for source in source_models[band]:
-                source.amp *= amps[i]
-                maglist.append(source.Mag(zp[band]))
-                i += 1
+        amps, chi = nnls(modarr, (imagestack/sigmastack)[maskstack])
 
-            mags[band] = maglist
+        maglist = []
+        i = 0
+        for comp in light_models + source_models:
+            magdic = {}
+            comp.amp *= amps[i]
+            for band in fitbands:
+                magdic[band] = comp.Mag(band)
+            maglist.append(magdic)
 
-            logp = -0.5*chi
+        logp = -0.5*chi
 
-            if logp != logp:
-                return -np.inf, fakemags
-            sumlogp += logp
+        if logp != logp:
+            return -np.inf, fakemags
+        sumlogp += logp
 
-        return sumlogp, mags
+        return sumlogp, maglist
 
     sampler = emcee.EnsembleSampler(nwalkers, npars, logpfunc)
 
@@ -328,14 +343,16 @@ if config['do_fit'] == 'YES':
         for j in range(nwalkers):
             for band in fitbands:
                 for l in range(nlight):
-                    outchain['light%d.mag_%s'%(l+1, band)][j, i] = magschain[i][j][band][l]
+                    outchain['light%d.mag_%s'%(l+1, band)][j, i] = magschain[i][j][l][band]
                 for s in range(nsource):
-                    outchain['source%d.mag_%s'%(s+1, band)][j, i] = magschain[i][j][band][nlight+s]
+                    outchain['source%d.mag_%s'%(s+1, band)][j, i] = magschain[i][j][nlight+s][band]
 
     output['chain'] = outchain
 
-light_ml_model = {}
-source_ml_model = {}
+light_ml_model = []
+source_ml_model = []
+light_mags = []
+source_mags = []
 
 # saves best fit model images
 for lens in lens_models:
@@ -344,55 +361,73 @@ for lens in lens_models:
 xl, yl = pylens.getDeflections(lens_models, (X, Y))
 
 sumlogp = 0.
-mags = {}
-for band in filters:
 
-    light_ml_model[band] = []
-    source_ml_model[band] = []
+modlist = []
 
-    modlist = []
+ntotbands = len(filters)
 
-    mags[band] = []
+modelstack = np.zeros((ntotbands * ny, nx))
+datastack = 0. * modelstack
+sigmastack = 0. * modelstack
+maskstack = 0. * modelstack
 
-    for light in light_models[band]:
-        light.setPars()
-        light.amp = 1.
-        lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
-        modlist.append((lmodel/sigmas[band]).ravel()[mask_r])
+for i in range(ntotbands):
+    datastack[i*ny: (i+1)*ny, :] = images[filters[i]]
+    sigmastack[i*ny: (i+1)*ny, :] = sigmas[filters[i]]
+    maskstack[i*ny: (i+1)*ny, :] = mask
 
-    for source in source_models[band]:
-        source.setPars()
-        source.amp = 1.
-        smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
-        modlist.append((smodel/sigmas[band]).ravel()[mask_r])
+for light in light_models:
+    light.setPars()
+    light.amp = 1.
+    lpix = light.pixeval(X, Y, bands=fitbands)
+    lmodel = 0. * imagestack
+    for i in range(ntotbands):
+        lmodel[i*ny: (i+1)*ny, :] = convolve.convolve(lpix[filters[i]], light.convolve[filters[i]], False)[0]
+    modlist.append((lmodel/sigmastack)[maskstack])
 
-    modarr = np.array(modlist).T
+for source in source_models:
+    source.setPars()
+    source.amp = 1.
+    spix = source.pixeval(xl, yl, bands=fitbands)
+    smodel = 0. * imagestack
+    for i in range(ntotbands):
+        smodel[i*ny: (i+1)*ny, :] = convolve.convolve(spix[filters[i]], source.convolve[filters[i]], False)[0]
+    modlist.append((smodel/sigmastack)[maskstack])
 
-    amps, chi = nnls(modarr, (images[band]/sigmas[band]).ravel()[mask_r])
+modarr = np.array(modlist).T
 
-    if band in fitbands:
-        sumlogp += -0.5*chi
+amps, chi = nnls(modarr, (imagestack/sigmastack)[maskstack])
 
-    n = 0
-    for light in light_models[band]:
-        lmodel = convolve.convolve(light.pixeval(X, Y), light.convolve, False)[0]
-        lmodel *= amps[n]
-        light.amp *= amps[n]
+n = 0
+for light in light_models:
+
+    light_ml_dic = {}
+    light_ml_mag = {}
+
+    light.amp = amps[n]
+    lpix = light.pixeval(X, Y, bands=filters)
+    for band in filters:
+        light_ml_dic[band] = convolve.convolve(lpix[band], light.convolve[band], False)[0]
+        light_ml_mag[band] = light.Mag(band)
         
-        mags[band].append(light.Mag(zp[band]))
-        
-        light_ml_model[band].append(lmodel)
-        n += 1
+    light_ml_model.append(light_ml_dic)
+    light_mags.append(light_ml_mag)
+    n += 1
 
-    for source in source_models[band]:
-        smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
-        smodel *= amps[n]
-        source.amp *= amps[n]
+for source in source_models:
 
-        mags[band].append(source.Mag(zp[band]))
+    source_ml_dic = {}
+    source_ml_mag = {}
 
-        source_ml_model[band].append(smodel)
-        n += 1
+    source.amp = amps[n]
+    spix = source.pixeval(xl, yl, bands=fitbands)
+    for band in filters:
+        source_ml_dic[band] = convolve.convolve(spix[band], source.convolve[band], False)[0]
+        source_ml_mag[band] = source.Mag(band)
+
+    source_ml_model.append(source_ml_dic)
+    source_magr.append(source_ml_mag)
+    n += 1
 
 # makes model rgb
 if len(rgbbands) >= 3:
@@ -411,12 +446,11 @@ for band in bandshere:
     sci_list.append(images[band])
     lmodel = 0.*images[band]
     smodel = 0.*images[band]
-    for light in light_ml_model[band]:
-        lmodel += light
+    for light in light_ml_model:
+        lmodel += light[band]
     light_list.append(lmodel)
-
-    for source in source_ml_model[band]:
-        smodel += source
+    for source in source_ml_model:
+        smodel += source[band]
     source_list.append(smodel)
 
 plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['rgbname'])

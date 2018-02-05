@@ -538,9 +538,9 @@ def read_config(filename):
     lines = f.readlines()
     f.close()
 
-    config = {'data_dir':'./', 'output_dir':'./', 'filters': None, 'fitbands': None, 'rgbbands': None, \
+    config = {'data_dir':'./', 'output_dir':'./', 'filters': None, 'main_band': None, 'fitbands': None, 'rgbbands': None, \
               'zeropoints': None, \
-              'filename': None, 'science_tag':'_sci.fits', 'err_tag':'_var.fits', 'err_type': 'VAR', 'psf_tag':'_psf.fits', \
+              'filename': None, 'filter_prefix': '', 'science_tag':'_sci.fits', 'err_tag':'_var.fits', 'err_type': 'VAR', 'psf_tag':'_psf.fits', \
               'rmax': None, 'do_fit': 'YES', 'Nsteps':300, 'Nwalkers':30, 'burnin':None, 'maskname':None, \
               'rgbname': 'model_rgb.png', 'rgbcuts': None, 'outname': None}
 
@@ -597,6 +597,7 @@ def read_config(filename):
     light_components = []
     lens_components = []
     source_components = []
+    source_templates = []
 
     while i < len(lines):
 
@@ -673,6 +674,43 @@ def read_config(filename):
                 else:
                     source_components.append(comp)
 
+            elif 'source_template' in line[0]:
+                model_class = line[1].lstrip()
+
+                if model_class == 'Sersic':
+                    npars = 7
+                    parnames = ['x', 'y', 'q', 'pa', 're', 'n', 'zs']
+                else:
+                    df
+
+                tempname = line[2].rstrip()
+
+                comp = {'class':model_class, 'tempname': tempname, 'pars':{}}
+
+                foundpars = 0
+                j = 1
+
+                while foundpars < npars and j+i < len(lines):
+                    line = lines[j+i].split()
+                    if lines[j+i][0] != '#' and len(line) > 0:
+                        if line[0] in parnames:
+                            foundpars += 1
+                            par = line[0]
+                            link = None
+                            if len(line) > 6:
+                                link = line[6]
+                            tmp_par = {'value': float(line[1]), 'low': float(line[2]), 'up': float(line[3]), \
+                           'step': float(line[4]), 'var': int(line[5]), 'link':link}
+                            comp['pars'][par] = tmp_par
+                    j += 1
+
+                i += j
+
+                if foundpars < npars:
+                    print 'not all parameters found!'
+                else:
+                    source_templates.append(comp)
+
             elif 'lens_model' in line[0]:
                 model_class = line[1].lstrip()
 
@@ -715,6 +753,7 @@ def read_config(filename):
 
     config['light_components'] = light_components
     config['source_components'] = source_components
+    config['source_templates'] = source_templates
     config['lens_components'] = lens_components
 
     return config

@@ -1,5 +1,4 @@
 import numpy as np
-import pymc
 import sys
 import pyfits
 from pylens import pylens, SBModels, MassModels, plotting_tools, convolve
@@ -11,6 +10,15 @@ from scipy.optimize import nnls
 
 
 configfile = sys.argv[1]
+
+class Par:
+
+    def __init__(self, name, lower=0., upper=1., value=0.):
+
+        self.name = name
+        self.lower = lower
+        self.upper = upper
+        self.value = value
 
 def read_config(filename):
 
@@ -236,7 +244,7 @@ for comp in config['light_components']:
     for par in comp['pars']:
         parpar = comp['pars'][par]
         if parpar['link'] is None and parpar['var'] == 1:
-            pars.append(pymc.Uniform(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
+            pars.append(Par(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
             bounds.append((parpar['low'], parpar['up']))
             steps.append(parpar['step'])
             par2index['light'+str(ncomp)+'.'+par] = npar
@@ -249,7 +257,7 @@ for comp in config['source_templates']:
     for par in comp['pars']:
         parpar = comp['pars'][par]
         if parpar['link'] is None and parpar['var'] == 1:
-            pars.append(pymc.Uniform(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
+            pars.append(Par(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
             bounds.append((parpar['low'], parpar['up']))
             steps.append(parpar['step'])
             par2index['sourcetemp'+str(ncomp)+'.'+par] = npar
@@ -262,7 +270,7 @@ for comp in config['lens_components']:
     for par in comp['pars']:
         parpar = comp['pars'][par]
         if parpar['link'] is None and parpar['var'] == 1:
-            pars.append(pymc.Uniform(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
+            pars.append(Par(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
             bounds.append((parpar['low'], parpar['up']))
             steps.append(parpar['step'])
             par2index['lens'+str(ncomp)+'.'+par] = npar
@@ -320,8 +328,10 @@ for comp in config['lens_components']:
         if comp['pars'][par]['link'] is None:
             if comp['pars'][par]['var'] == 1:
                 pars_here[par] = pars[par2index[name+'.'+par]]
+            elif comp['pars'][par]['var'] == 0:
+                pars_here[par] = Par(par, lower=comp['pars'][par]['value'], upper=comp['pars'][par]['value'], value=comp['pars'][par]['value'])
             else:
-                pars_here[par] = comp['pars'][par]['value']
+                df
         else:
             pars_here[par] = pars[par2index[comp['pars'][par]['link']]]
 
@@ -346,7 +356,7 @@ for comp in config['light_components']:
                 if comp['pars'][par]['var'] == 1:
                     pars_here[par] = pars[par2index[name+'.'+par]]
                 else:
-                    pars_here[par] = comp['pars'][par]['value']
+                    pars_here[par] = Par(par, lower=comp['pars'][par]['value'], upper=comp['pars'][par]['value'], value=comp['pars'][par]['value'])
             else:
                 pars_here[par] = pars[par2index[comp['pars'][par]['link']]]
         else:
@@ -354,7 +364,7 @@ for comp in config['light_components']:
                 if comp['pars'][par]['var'] == 1:
                     colors_here[par] = pars[par2index[name+'.'+par]]
                 else:
-                    colors_here[par] = comp['pars'][par]['value']
+                    colors_here[par] = Par(par, lower=comp['pars'][par]['value'], upper=comp['pars'][par]['value'], value=comp['pars'][par]['value'])
             else:
                 colors_here[par] = pars[par2index[comp['pars'][par]['link']]]
 
@@ -411,6 +421,18 @@ mask_r = mask.ravel()
 
 output = {}
 
+nfitbands = len(fitbands)
+
+modelstack = np.zeros((nfitbands * ny, nx))
+datastack = 0. * modelstack
+sigmastack = 0. * modelstack
+maskstack = np.zeros((nfitbands * ny, nx), dtype=bool)
+for i in range(nfitbands):
+    datastack[i*ny: (i+1)*ny, :] = images[fitbands[i]]
+    sigmastack[i*ny: (i+1)*ny, :] = sigmas[fitbands[i]]
+    maskstack[i*ny: (i+1)*ny, :] = mask
+maskstack_r = maskstack.ravel()
+
 if config['do_fit'] == 'YES':
     start = []
     for j in range(npars):
@@ -440,18 +462,6 @@ if config['do_fit'] == 'YES':
 
     ncomp = len(light_models) + len(sourcetemp_models)
 
-    nfitbands = len(fitbands)
-
-    modelstack = np.zeros((nfitbands * ny, nx))
-    datastack = 0. * modelstack
-    sigmastack = 0. * modelstack
-    maskstack = np.zeros((nfitbands * ny, nx), dtype=int)
-    for i in range(nfitbands):
-        datastack[i*ny: (i+1)*ny, :] = images[fitbands[i]]
-        sigmastack[i*ny: (i+1)*ny, :] = sigmas[fitbands[i]]
-        maskstack[i*ny: (i+1)*ny, :] = mask
-    maskstack_r = maskstack.ravel()
-
     def logpfunc(allpars):
         lp = logprior(allpars)
         if not np.isfinite(lp):
@@ -459,7 +469,6 @@ if config['do_fit'] == 'YES':
 
         for j in range(0, npars):
             pars[j].value = allpars[j]
-        sumlogp = 0.
 
         for lens in lens_models:
             lens.setPars()
@@ -519,12 +528,10 @@ if config['do_fit'] == 'YES':
         # need to add source magnitudes
 
         logp = -0.5*chi
-
         if logp != logp:
             return -np.inf, fakemags
-        sumlogp += logp
 
-        return sumlogp, maglist
+        return logp, maglist
 
     sampler = emcee.EnsembleSampler(nwalkers, npars, logpfunc)
 
@@ -541,6 +548,8 @@ if config['do_fit'] == 'YES':
         pars[j].value = sampler.flatchain[ML, j]
 
     outchain = {}
+    outchain['logp'] = sampler.lnprobability
+
     for i in range(npars):
         outchain[index2par[i]] = chain[:, :, i]
 
@@ -571,8 +580,6 @@ for lens in lens_models:
     lens.setPars()
 
 xl, yl = pylens.getDeflections(lens_models, (X, Y))
-
-sumlogp = 0.
 
 modlist = []
 
@@ -624,12 +631,16 @@ for light, colordict in zip(light_models, light_colordicts):
     light.amp = amps[n]
     lpix = light.pixeval(X, Y)
     for band in filters:
-        light_ml_dic[band] = convolve.convolve(lpix, convol_matrix[band], False)[0]
+        if band == config['main_band']:
+            scale = 1.
+        else:
+            color = colordict['%s-%s'%(band, config['main_band'])].value # I believe this will crash if the color is not a free parameter
+            scale = 10.**(-(color + zp[config['main_band']] - zp[band])/2.5)
+        light_ml_dic[band] = scale * convolve.convolve(lpix, convol_matrix[band], False)[0]
         if band == config['main_band']:
             light_ml_mag[band] = light.Mag(zp[band])
         else:
             light_ml_mag[band] = light.Mag(zp[config['main_band']]) + colordict['%s-%s'%(band, config['main_band'])].value # I believe this will crash if the color is not a free parameter
-
         
     light_ml_model.append(light_ml_dic)
     light_mags.append(light_ml_mag)
@@ -678,7 +689,7 @@ plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config[
 
 output['light_ml_model'] = light_ml_model
 output['source_ml_model'] = source_ml_model
-output['logp'] = sumlogp
+output['logp'] = -0.5*chi
 
 f = open(config['output_dir']+'/'+config['outname'], 'w')
 pickle.dump(output, f)
@@ -783,7 +794,7 @@ for lens in lens_models:
     ncomp += 1
 
 conflines.append('\n')
-conflines.append('logp %f\n'%sumlogp)
+conflines.append('logp %f\n'%(-0.5*chi))
 
 f = open(config['output_dir']+'/'+configfile+'.out', 'w')
 f.writelines(conflines)

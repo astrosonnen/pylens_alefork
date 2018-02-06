@@ -7,9 +7,11 @@ from scipy.stats import truncnorm
 from scipy.interpolate import splrep, splev
 import emcee
 from scipy.optimize import nnls
+import os
 
 
 configfile = sys.argv[1]
+rootdir = os.environ.get('PYLENSDIR')
 
 class Par:
 
@@ -26,11 +28,11 @@ def read_config(filename):
     lines = f.readlines()
     f.close()
 
-    config = {'data_dir':'./', 'output_dir':'./', 'filters': None, 'main_band': None, 'fitbands': None, 'rgbbands': None, \
+    config = {'data_dir':'./', 'mask_dir': None, 'output_dir':'./', 'filters': None, 'main_band': None, 'fitbands': None, 'rgbbands': None, \
               'zeropoints': None, \
-              'filename': None, 'filter_prefix': '', 'science_tag':'_sci.fits', 'err_tag':'_var.fits', 'err_type': 'VAR', 'psf_tag':'_psf.fits', \
+              'filename': None, 'filter_prefix': '', 'filter_suffix': '', 'science_tag':'_sci.fits', 'err_tag':'_var.fits', 'err_type': 'VAR', 'psf_tag':'_psf.fits', \
               'rmax': None, 'do_fit': 'YES', 'Nsteps':300, 'Nwalkers':30, 'burnin':None, 'maskname':None, \
-              'rgbname': 'model_rgb.png', 'rgbcuts': None, 'outname': None}
+              'rgbname': None, 'rgbcuts': None, 'outname': None}
 
     preamble = True
 
@@ -141,7 +143,7 @@ def read_config(filename):
                 else:
                     df
 
-                comp = {'class':model_class, 'pars':{}}
+                comp = {'class':model_class, 'pars':{}, 'tempname': tempname}
 
                 foundpars = 0
                 j = 1
@@ -281,9 +283,18 @@ npars = len(pars)
 
 i = 0
 
+filtdic = {}
 for band in config['filters']:
 
     zp[band] = config['zeropoints'][i]
+
+    filtname = rootdir+'pylens/filters/%s%s%s'%(config['filter_prefix'], band, config['filter_suffix'])
+
+    f = open(filtname, 'r')
+    ftable = np.loadtxt(f)
+    f.close()
+
+    filtdic[band] = (ftable[:, 0], ftable[:, 1])
 
     hdu = pyfits.open(config['data_dir']+'/'+config['filename']+'_%s'%band+config['science_tag'])[0]
 
@@ -395,9 +406,15 @@ for comp in config['source_templates']:
     sourcetemp_pardicts.append(pars_here)
     sourcetemp_templates.append(comp['tempname'])
 
-for pardict, template in zip(sourcetemp_pardicts, sourcetemp_templates):
+for pardict, tempname in zip(sourcetemp_pardicts, sourcetemp_templates):
 
-    source = SBModels.SersicTemplate('source', pardict, template=template, filters=config['filters'], filter_prefix=config['filter_prefix'], zp=zp)
+    f = open(rootdir+'pylens/templates/'+tempname, 'r')
+    ttable = np.loadtxt(f)
+    f.close()
+
+    template = (ttable[:, 0], ttable[:, 1])
+
+    source = SBModels.SersicTemplate('source', pardict, template, filtdic)
     sourcetemp_models.append(source)
 
 for pardict in light_pardicts:
@@ -408,8 +425,10 @@ ny, nx = images[filters[0]].shape
 X, Y = np.meshgrid(np.arange(1.*nx), np.arange(1.*ny))
 R = ((X - nx/2)**2 + (Y - ny/2)**2)**0.5
 
+if config['mask_dir'] is None:
+    config['mask_dir'] = config['data_dir']
 if config['maskname'] is not None:
-    MASK = pyfits.open(config['data_dir']+config['maskname'])[0].data.copy()
+    MASK = pyfits.open(config['mask_dir']+config['maskname'])[0].data.copy()
 else:
     MASK = np.ones(X.shape, dtype=int)
 
@@ -489,7 +508,7 @@ if config['do_fit'] == 'YES':
                 if fitbands[i] == config['main_band']:
                     scale = 1.
                 else:
-                    color = colordict['%s-%s'%(fitbands[i], config['main_band'])].value # I believe this will crash if the color is not a free parameter
+                    color = colordict['%s-%s'%(fitbands[i], config['main_band'])].value
                     scale = 10.**(-(color + zp[config['main_band']] - zp[fitbands[i]])/2.5)
                     
                 lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[fitbands[i]], False)[0]
@@ -498,11 +517,14 @@ if config['do_fit'] == 'YES':
         for source in sourcetemp_models:
             smodel = 0. * datastack
             source.setPars()
-            source.getColors()
             source.amp = 1.
-            spix = source.pixeval(xl, yl, bands=fitbands)
+            spix = source.pixeval(xl, yl)
             for i in range(nfitbands):
-                smodel[i*ny: (i+1)*ny, :] = convolve.convolve(spix[fitbands[i]], convol_matrix[fitbands[i]], False)[0]
+                if fitbands[i] == config['main_band']:
+                    scale = 1.
+                else:
+                    scale = source.scale(fitbands[i], config['main_band']) * 10.**(-(zp[config['main_band']] - zp[fitbands[i]])/2.5)
+                smodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(spix, convol_matrix[fitbands[i]], False)[0]
             modlist.append((smodel/sigmastack).ravel()[maskstack_r])
 
         modarr = np.array(modlist).T
@@ -524,8 +546,24 @@ if config['do_fit'] == 'YES':
                 else:
                     magdic[band] = comp.Mag(zp[config['main_band']]) + colordict['%s-%s'%(band, config['main_band'])].value
             maglist.append(magdic)
+            i += 1
 
-        # need to add source magnitudes
+        for comp in sourcetemp_models:
+            magdic = {}
+            if amps[i] > 0.:
+                comp.amp *= amps[i]
+                mainmag = comp.Mag(zp[config['main_band']])
+                for band in fitbands:
+                    if band == config['main_band']:
+                        magdic[band] = mainmag
+                    else:
+                        scale = comp.scale(band, config['main_band']) * 10.**(-(zp[config['main_band']] - zp[fitbands[i]])/2.5)
+                        magdic[band] = mainmag - 2.5*np.log10(scale)
+            else:
+                for band in fitbands:
+                    magdic[band] = 99.
+            maglist.append(magdic)
+            i += 1
 
         logp = -0.5*chi
         if logp != logp:
@@ -588,12 +626,14 @@ ntotbands = len(filters)
 modelstack = np.zeros((ntotbands * ny, nx))
 datastack = 0. * modelstack
 sigmastack = 0. * modelstack
-maskstack = 0. * modelstack
+maskstack = np.zeros((ntotbands * ny, nx), dtype=bool)
 
 for i in range(ntotbands):
     datastack[i*ny: (i+1)*ny, :] = images[filters[i]]
     sigmastack[i*ny: (i+1)*ny, :] = sigmas[filters[i]]
     maskstack[i*ny: (i+1)*ny, :] = mask
+
+maskstack_r = maskstack.ravel()
 
 for light, colordict in zip(light_models, light_colordicts):
     light.setPars()
@@ -604,7 +644,7 @@ for light, colordict in zip(light_models, light_colordicts):
         if filters[i] == config['main_band']:
             scale = 1.
         else:
-            color = colordict['%s-%s'%(filters[i], config['main_band'])].value # I believe this will crash if the color is not a free parameter
+            color = colordict['%s-%s'%(filters[i], config['main_band'])].value
             scale = 10.**(-(color + zp[config['main_band']] - zp[filters[i]])/2.5)
         lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[filters[i]], False)[0]
     modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
@@ -612,10 +652,14 @@ for light, colordict in zip(light_models, light_colordicts):
 for source in sourcetemp_models:
     source.setPars()
     source.amp = 1.
-    spix = source.pixeval(xl, yl, bands=fitbands)
+    spix = source.pixeval(xl, yl)
     smodel = 0. * datastack
     for i in range(ntotbands):
-        smodel[i*ny: (i+1)*ny, :] = convolve.convolve(spix[filters[i]], convol_matrix[filters[i]], False)[0]
+        if fitbands[i] == config['main_band']:
+            scale = 1.
+        else:
+            scale = source.scale(filters[i], config['main_band']) * 10.**(-(zp[config['main_band']] - zp[fitbands[i]])/2.5)
+        smodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(spix, convol_matrix[filters[i]], False)[0]
     modlist.append((smodel/sigmastack).ravel()[maskstack_r])
 
 modarr = np.array(modlist).T
@@ -634,13 +678,13 @@ for light, colordict in zip(light_models, light_colordicts):
         if band == config['main_band']:
             scale = 1.
         else:
-            color = colordict['%s-%s'%(band, config['main_band'])].value # I believe this will crash if the color is not a free parameter
+            color = colordict['%s-%s'%(band, config['main_band'])].value
             scale = 10.**(-(color + zp[config['main_band']] - zp[band])/2.5)
         light_ml_dic[band] = scale * convolve.convolve(lpix, convol_matrix[band], False)[0]
         if band == config['main_band']:
             light_ml_mag[band] = light.Mag(zp[band])
         else:
-            light_ml_mag[band] = light.Mag(zp[config['main_band']]) + colordict['%s-%s'%(band, config['main_band'])].value # I believe this will crash if the color is not a free parameter
+            light_ml_mag[band] = light.Mag(zp[config['main_band']]) + colordict['%s-%s'%(band, config['main_band'])].value
         
     light_ml_model.append(light_ml_dic)
     light_mags.append(light_ml_mag)
@@ -652,29 +696,27 @@ for source in sourcetemp_models:
     source_ml_mag = {}
 
     source.amp = amps[n]
-    spix = source.pixeval(xl, yl, bands=fitbands)
+    spix = source.pixeval(xl, yl)
+    mainmag = source.Mag(zp[config['main_band']])
+
     for band in filters:
-        source_ml_dic[band] = convolve.convolve(spix[band], convol_matrix[band], False)[0]
-        source_ml_mag[band] = source.Mag(band)
+        if band == config['main_band']:
+            scale = 1.
+            source_ml_mag[band] = mainmag
+        else:
+            scale = source.scale(band, config['main_band']) * 10.**(-(zp[config['main_band']] - zp[fitbands[i]])/2.5)
+            source_ml_mag[band] = mainmag - 2.5*np.log10(scale)
+        source_ml_dic[band] = scale * convolve.convolve(spix, convol_matrix[band], False)[0]
 
     source_ml_model.append(source_ml_dic)
     source_mags.append(source_ml_mag)
     n += 1
 
 # makes model rgb
-if len(rgbbands) >= 3:
-    bandshere = rgbbands
-else:
-    bandshere = filters
-    if len(bandshere) < 3:
-        bandshere += filters
-    if len(bandshere) < 3:
-        bandshere += filters
-
 sci_list = []
 light_list = []
 source_list = []
-for band in bandshere:
+for band in filters:
     sci_list.append(images[band])
     lmodel = 0.*images[band]
     smodel = 0.*images[band]
@@ -685,7 +727,53 @@ for band in bandshere:
         smodel += source[band]
     source_list.append(smodel)
 
-plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['rgbname'])
+if config['rgbname'] is None:
+    config['rgbname'] = config['filename'] + '_rgb.png'
+plotting_tools.make_full_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['rgbname'])
+
+"""
+if len(rgbbands) >= 3:
+    bandshere = rgbbands
+else:
+    bandshere = filters
+    if len(bandshere) < 3:
+        bandshere += filters
+    if len(bandshere) < 3:
+        bandshere += filters
+rgbsets = []
+if ntotbands == 1:
+    rgbsets.append((filters[0], filters[0], filters[0]))
+elif ntotbands == 2:
+    rgbsets.append((filters[1], filters[1], filters[0]))
+elif ntotbands == 3:
+    rgbsets.append((filters[2], filters[1], filters[0]))
+else:
+    nsets = ntotbands - 2
+    for i in range(nsets):
+        rgbsets.append((filters[ntotbands-1-i], filters[ntotbands-2-i], filters[ntotbands-3-i]))
+
+def make_rgb(rgbbands):
+    sci_list = []
+    light_list = []
+    source_list = []
+    for band in rgbbands:
+        sci_list.append(images[band])
+        lmodel = 0.*images[band]
+        smodel = 0.*images[band]
+        for light in light_ml_model:
+            lmodel += light[band]
+        light_list.append(lmodel)
+        for source in source_ml_model:
+            smodel += source[band]
+        source_list.append(smodel)
+
+    plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['outname']+'_%s%s%s.png'%rgbbands)
+
+for rgbset in rgbsets:
+    make_rgb(rgbset)
+
+#plotting_tools.make_model_rgb(sci_list, light_list, source_list, outname=config['output_dir']+'/'+config['rgbname'])
+"""
 
 output['light_ml_model'] = light_ml_model
 output['source_ml_model'] = source_ml_model
@@ -697,7 +785,7 @@ f.close()
 
 # writes a new configuration file
 conflines = []
-confpars = ['data_dir', 'output_dir', 'filename', 'science_tag', 'err_tag', 'err_type', 'psf_tag', 'rmax', 'Nwalkers', 'Nsteps', 'main_band', 'filter_prefix']
+confpars = ['data_dir', 'mask_dir', 'output_dir', 'filename', 'science_tag', 'err_tag', 'err_type', 'psf_tag', 'rmax', 'Nwalkers', 'Nsteps', 'main_band', 'filter_prefix', 'filter_suffix']
 for parname in confpars:
     if config[parname] is not None:
         conflines.append('%s: %s\n'%(parname, config[parname]))
@@ -754,11 +842,11 @@ for light, mags in zip(light_pardicts, light_mags):
 
 ncomp = 0
 sourcepars = ['x', 'y', 'pa', 'q', 're', 'n', 'zs']
-for source in sourcetemp_pardicts:
+for source, mags in zip(sourcetemp_pardicts, source_mags):
     conflines.append('\n')
     conflines.append('source_model Sersic\n')
     for par in sourcepars:
-        parname = 'source%d.%s'%(ncomp+1, par)
+        parname = 'sourcetemp%d.%s'%(ncomp+1, par)
         if parname in par2index:
             npar = par2index[parname]
             conflines.append('%s %f %f %f %f 1\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar]))
@@ -770,7 +858,7 @@ for source in sourcetemp_pardicts:
                 npar = par2index[lname]
                 conflines.append('%s %f %f %f %f 1 %s\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar], lname))
     for band in filters:
-        conflines.append('mag_%s %3.2f\n'%(band, mags[band][nlight+ncomp]))
+        conflines.append('mag_%s %3.2f\n'%(band, mags[band]))
     ncomp += 1
 
 ncomp = 0

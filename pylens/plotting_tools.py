@@ -1,6 +1,6 @@
 import pylab
 import numpy as np
-import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 
 def make_rgbarray(images, cuts):
@@ -39,7 +39,7 @@ def make_crazy_pil_format(data, cuts):
     return l
 
 
-def make_model_rgb(sci, light_model, source_model, cuts=(99., 99., 99.), outname='model_rgb.png'):
+def make_one_rgb(sci, light_model, source_model, cuts=(99., 99., 99.)):
 
     auto_cuts = []
     data = []
@@ -83,5 +83,48 @@ def make_model_rgb(sci, light_model, source_model, cuts=(99., 99., 99.), outname
     im.paste(sim, (2*s[1], 0))
     im.paste(lrim, (3*s[1], 0))
 
-    im.save(outname)
+    return im
+
+def make_full_rgb(sci_list, light_list, source_list, outname='rgb.png'):
+
+    rgbsets = []
+    ntotbands = len(sci_list)
+    if ntotbands == 1:
+        rgbsets.append((0, 0, 0))
+    elif ntotbands == 2:
+        rgbsets.append((1, 1, 0))
+        rgbsets.append((0, 0, 0))
+        rgbsets.append((1, 1, 1))
+    elif ntotbands == 3:
+        rgbsets.append((2, 1, 0))
+        rgbsets.append((0, 0, 0))
+        rgbsets.append((1, 1, 1))
+        rgbsets.append((2, 2, 2))
+    else:
+        nsets = ntotbands - 2
+        for i in range(nsets):
+            rgbsets.append((i+2, i+1, i))
+        for i in range(ntotbands):
+            rgbsets.append((i, i, i))
+
+    nsets = len(rgbsets)
+
+    fullim = Image.new
+
+    s = (4*sci_list[0].shape[1], sci_list[0].shape[0])
+    fullim = Image.new('RGB', (s[0], nsets*s[1]), 'black')
+
+    for i in range(nsets):
+        sci_here = []
+        light_here = []
+        source_here = []
+        for ind in rgbsets[i]:
+            sci_here.append(sci_list[ind])
+            light_here.append(light_list[ind])
+            source_here.append(source_list[ind])
+        im = make_one_rgb(sci_here, light_here, source_here)
+
+        fullim.paste(im, (0, i*s[1]))
+
+    fullim.save(outname)
 

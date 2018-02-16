@@ -281,12 +281,18 @@ if config['do_fit'] == 'YES':
 
             i = 0
             for light in light_models[band]:
-                light.amp *= amps[i]
-                maglist.append(light.Mag(zp[band]))
+                if amps[i] > 0.:
+                    light.amp *= amps[i]
+                    maglist.append(light.Mag(zp[band]))
+                else:
+                    maglist.append(99.)
                 i += 1
             for source in source_models[band]:
-                source.amp *= amps[i]
-                maglist.append(source.Mag(zp[band]))
+                if amps[i] > 0.:
+                    source.amp *= amps[i]
+                    maglist.append(source.Mag(zp[band]))
+                else:
+                    maglist.append(99.)
                 i += 1
 
             mags[band] = maglist
@@ -387,9 +393,11 @@ for band in filters:
     for source in source_models[band]:
         smodel = convolve.convolve(source.pixeval(xl, yl), source.convolve, False)[0]
         smodel *= amps[n]
-        source.amp *= amps[n]
-
-        mags[band].append(source.Mag(zp[band]))
+        if amps[n] > 0.:
+            source.amp *= amps[n]
+            mags[band].append(source.Mag(zp[band]))
+        else:
+            mags[band].append(99.)
 
         source_ml_model[band].append(smodel)
         n += 1

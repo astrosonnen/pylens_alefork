@@ -103,6 +103,7 @@ def read_config(filename):
     config['rmax'] = float(config['rmax'])
 
     light_components = []
+    light_templates = []
     lens_components = []
     source_templates = []
 
@@ -146,10 +147,8 @@ def read_config(filename):
                 else:
                     light_components.append(comp)
 
-            elif 'source_template' in line[0]:
+            elif line[0] == 'light_template':
                 model_class = line[1].lstrip()
-                #tempname = line[2].rstrip()
-                tempname = 'dummy'
 
                 if model_class == 'Sersic':
                     npars = 8
@@ -157,7 +156,42 @@ def read_config(filename):
                 else:
                     df
 
-                comp = {'class':model_class, 'pars':{}, 'tempname': tempname}
+                comp = {'class':model_class, 'pars':{}}
+
+                foundpars = 0
+                j = 1
+
+                while foundpars < npars and j+i < len(lines):
+                    line = lines[j+i].split()
+                    if lines[j+i][0] != '#' and len(line) > 0:
+                        if line[0] in parnames:
+                            foundpars += 1
+                            par = line[0]
+                            link = None
+                            if len(line) > 6:
+                                link = line[6]
+                            tmp_par = {'value': float(line[1]), 'low': float(line[2]), 'up': float(line[3]), \
+                           'step': float(line[4]), 'var': int(line[5]), 'link':link}
+                            comp['pars'][par] = tmp_par
+                    j += 1
+
+                i += j
+
+                if foundpars < npars:
+                    print 'not all parameters found!'
+                else:
+                    light_templates.append(comp)
+
+            elif line[0] == 'source_template':
+                model_class = line[1].lstrip()
+
+                if model_class == 'Sersic':
+                    npars = 8
+                    parnames = ['x', 'y', 'q', 'pa', 're', 'n', 'zs', 'tn']
+                else:
+                    df
+
+                comp = {'class':model_class, 'pars':{}}
 
                 foundpars = 0
                 j = 1
@@ -224,6 +258,7 @@ def read_config(filename):
             i += 1
 
     config['light_components'] = light_components
+    config['light_templates'] = light_templates
     config['source_templates'] = source_templates
     config['lens_components'] = lens_components
 
@@ -235,6 +270,7 @@ images = {}
 sigmas = {}
 convol_matrix = {}
 light_models = []
+lighttemp_models = []
 sourcetemp_models = []
 lens_models = []
 zp = {}
@@ -249,6 +285,7 @@ par2index = {}
 index2par = {}
 
 nlight = len(config['light_components'])
+nltemp = len(config['light_templates'])
 nsource = len(config['source_templates'])
 nlens = len(config['lens_components'])
 
@@ -264,6 +301,19 @@ for comp in config['light_components']:
             steps.append(parpar['step'])
             par2index['light'+str(ncomp)+'.'+par] = npar
             index2par[npar] = 'light'+str(ncomp)+'.'+par
+            npar += 1
+
+ncomp = 0
+for comp in config['light_templates']:
+    ncomp += 1
+    for par in comp['pars']:
+        parpar = comp['pars'][par]
+        if parpar['link'] is None and parpar['var'] == 1:
+            pars.append(Par(par+str(ncomp), lower=parpar['low'], upper=parpar['up'], value=parpar['value']))
+            bounds.append((parpar['low'], parpar['up']))
+            steps.append(parpar['step'])
+            par2index['lighttemp'+str(ncomp)+'.'+par] = npar
+            index2par[npar] = 'lighttemp'+str(ncomp)+'.'+par
             npar += 1
 
 ncomp = 0
@@ -398,8 +448,27 @@ for comp in config['light_components']:
     light_colordicts.append(colors_here)
 
 ncomp = 1
+lighttemp_pardicts = []
+for comp in config['light_templates']:
+
+    name = 'lighttemp%d'%ncomp
+
+    pars_here = {}
+    for par in comp['pars']:
+        if comp['pars'][par]['link'] is None:
+            if comp['pars'][par]['var'] == 1:
+                pars_here[par] = pars[par2index[name+'.'+par]]
+            else:
+                pars_here[par] = comp['pars'][par]['value']
+        else:
+            pars_here[par] = pars[par2index[comp['pars'][par]['link']]]
+
+    ncomp += 1
+
+    lighttemp_pardicts.append(pars_here)
+
+ncomp = 1
 sourcetemp_pardicts = []
-sourcetemp_templates = []
 for comp in config['source_templates']:
 
     name = 'sourcetemp%d'%ncomp
@@ -417,18 +486,17 @@ for comp in config['source_templates']:
     ncomp += 1
 
     sourcetemp_pardicts.append(pars_here)
-    sourcetemp_templates.append(comp['tempname'])
 
 ncomp = 1
-for pardict, tempname in zip(sourcetemp_pardicts, sourcetemp_templates):
+for pardict in lighttemp_pardicts:
 
-    #f = open(rootdir+'pylens/templates/'+tempname, 'r')
-    #ttable = np.loadtxt(f)
-    #f.close()
+    light = SBModels.SersicTemplate('ltemp%d'%ncomp, pardict, filtdic)
+    lighttemp_models.append(light)
+    ncomp += 1
 
-    #template = (ttable[:, 0], ttable[:, 1])
+ncomp = 1
+for pardict in sourcetemp_pardicts:
 
-    #source = SBModels.SersicTemplate('source%d'%ncomp, pardict, template, filtdic)
     source = SBModels.SersicTemplate('source%d'%ncomp, pardict, filtdic)
     sourcetemp_models.append(source)
     ncomp += 1
@@ -489,6 +557,7 @@ def save_model(config, chain, ind=None):
     hdr = pyfits.Header()
 
     light_ind_model = []
+    ltemp_ind_model = []
     source_ind_model = []
     
     # saves best fit model images
@@ -526,7 +595,20 @@ def save_model(config, chain, ind=None):
                 scale = 10.**(-(color + zp[config['main_band']] - zp[filters[i]])/2.5)
             lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[filters[i]], False)[0]
         modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
-    
+
+    for ltemp in lighttemp_models:
+        ltemp.setPars()
+        ltemp.amp = 1.
+        lpix = ltemp.pixeval(X, Y)
+        lmodel = 0. * datastack
+        for i in range(ntotbands):
+            if filters[i] == config['main_band']:
+                scale = 1.
+            else:
+                scale = ltemp.scale(filters[i], config['main_band']) * 10.**(-(zp[config['main_band']] - zp[filters[i]])/2.5)
+            lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[filters[i]], False)[0]
+        modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
+     
     for source in sourcetemp_models:
         source.setPars()
         source.amp = 1.
@@ -569,7 +651,31 @@ def save_model(config, chain, ind=None):
         light_ind_model.append(light_ind_dic)
 
         n += 1
+
+    for ltemp in lighttemp_models:
     
+        ltemp_ind_dic = {}
+
+        ltemp.amp = amps[n]
+        lpix = ltemp.pixeval(xl, yl)
+        mainmag = ltemp.Mag(zp[config['main_band']])
+    
+        for band in filters:
+            if band == config['main_band']:
+                scale = 1.
+                ltemp_mag_here = mainmag
+            else:
+                scale = ltemp.scale(band, config['main_band']) * 10.**(-(zp[config['main_band']] - zp[band])/2.5)
+                ltemp_mag_here = mainmag - 2.5*np.log10(scale)
+            ltemp_ind_here = scale * convolve.convolve(lpix, convol_matrix[band], False)[0]
+            hdr['%s.mag_%s'%(ltemp.name, band)] = ltemp_mag_here
+
+            ltemp_ind_dic[band] = ltemp_ind_here
+
+        ltemp_ind_model.append(ltemp_ind_dic)
+    
+        n += 1
+
     for source in sourcetemp_models:
     
         source_ind_dic = {}
@@ -608,6 +714,13 @@ def save_model(config, chain, ind=None):
 
             hdulist.append(hdu_here)
 
+    for ltemp, ltemp_ind_dic in zip(lighttemp_models, ltemp_ind_model):
+        for band in filters:
+            hdu_here = pyfits.ImageHDU(data=ltemp_ind_dic[band])
+            hdu_here.header['EXTNAME'] = '%s_%s'%(ltemp.name, band)
+
+            hdulist.append(hdu_here)
+
     for source, source_ind_dic in zip(sourcetemp_models, source_ind_model):
         for band in filters:
             hdu_here = pyfits.ImageHDU(data=source_ind_dic[band])
@@ -622,6 +735,12 @@ def save_model(config, chain, ind=None):
         lmodel = 0. * datastack
         for i in range(ntotbands):
             lmodel[i*ny: (i+1)*ny, :] = light_ind_dic[filters[i]]
+        modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
+
+    for ltemp_ind_dic in ltemp_ind_model:
+        lmodel = 0. * datastack
+        for i in range(ntotbands):
+            lmodel[i*ny: (i+1)*ny, :] = ltemp_ind_dic[filters[i]]
         modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
 
     for source_ind_dic in source_ind_model:
@@ -644,6 +763,8 @@ def save_model(config, chain, ind=None):
         smodel = 0.*images[band]
         for light in light_ind_model:
             lmodel += light[band]
+        for ltemp in ltemp_ind_model:
+            lmodel += ltemp[band]
         light_list.append(lmodel)
         for source in source_ind_model:
             smodel += source[band]
@@ -710,12 +831,34 @@ def write_config_file(config, chain, ind=None):
         for band in filters:
             conflines.append('mag_%s %3.2f\n'%(band, chain['light%d.mag_%s'%(ncomp+1, band)].value.flatten()[ind]))
         ncomp += 1
-    
+
+    ncomp = 0
+    ltemppars = ['x', 'y', 'pa', 'q', 're', 'n', 'zs', 'tn']
+    for ltemp in lighttemp_pardicts:
+        conflines.append('\n')
+        conflines.append('light_template Sersic\n')
+        for par in ltemppars:
+            parname = 'lighttemp%d.%s'%(ncomp+1, par)
+            if parname in par2index:
+                npar = par2index[parname]
+                conflines.append('%s %f %f %f %f 1\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar]))
+            else:
+                if config['light_templates'][ncomp]['pars'][par]['link'] is None:
+                    conflines.append('%s %f -1 -1 -1 0\n'%(par, config['light_templates'][ncomp]['pars'][par]['value']))
+                else:
+                    lname = config['light_templates'][ncomp]['pars'][par]['link']
+                    npar = par2index[lname]
+                    conflines.append('%s %f %f %f %f 1 %s\n'%(par, pars[npar].value, bounds[npar][0], bounds[npar][1], steps[npar], lname))
+        for band in filters:
+            conflines.append('mag_%s %3.2f\n'%(band, chain['lighttemp%d.mag_%s'%(ncomp+1, band)].value.flatten()[ind]))
+
+        ncomp += 1
+     
     ncomp = 0
     sourcepars = ['x', 'y', 'pa', 'q', 're', 'n', 'zs', 'tn']
-    for source, tempname in zip(sourcetemp_pardicts, sourcetemp_templates):
+    for source in sourcetemp_pardicts:
         conflines.append('\n')
-        conflines.append('source_template Sersic %s\n'%tempname)
+        conflines.append('source_template Sersic\n')
         for par in sourcepars:
             parname = 'sourcetemp%d.%s'%(ncomp+1, par)
             if parname in par2index:
@@ -782,13 +925,13 @@ if key is None:
     nwalkers = len(start)
 
     fakemags = []
-    for comp in light_models + sourcetemp_models:
+    for comp in light_models + lighttemp_models + sourcetemp_models:
         magdic = {}
         for band in fitbands:
             magdic[band] = 99.
         fakemags.append(magdic)
 
-    ncomp = len(light_models) + len(sourcetemp_models)
+    ncomp = len(light_models) + len(lighttemp_models) + len(sourcetemp_models)
 
     def logpfunc(allpars):
         lp = logprior(allpars)
@@ -820,6 +963,21 @@ if key is None:
                     color = colordict['%s-%s'%(fitbands[i], config['main_band'])].value
                     scale = 10.**(-(color + zp[config['main_band']] - zp[fitbands[i]])/2.5)
                    
+                lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[fitbands[i]], False)[0]
+            modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
+
+        for ltemp in lighttemp_models:
+            lmodel = 0. * datastack
+            ltemp.setPars()
+            ltemp.amp = 1.
+            lpix = ltemp.pixeval(X, Y)
+            for i in range(nfitbands):
+                if fitbands[i] == config['main_band']:
+                    scale = 1.
+                else:
+                    scale = ltemp.scale(fitbands[i], config['main_band']) * 10.**(-(zp[config['main_band']] - zp[fitbands[i]])/2.5)
+                    if (scale != scale) or not np.isfinite(scale):
+                        scale = 0.
                 lmodel[i*ny: (i+1)*ny, :] = scale * convolve.convolve(lpix, convol_matrix[fitbands[i]], False)[0]
             modlist.append((lmodel/sigmastack).ravel()[maskstack_r])
 
@@ -857,6 +1015,26 @@ if key is None:
                         magdic[band] = comp.Mag(zp[config['main_band']])
                     else:
                         magdic[band] = comp.Mag(zp[config['main_band']]) + colordict['%s-%s'%(band, config['main_band'])].value
+            else:
+                for band in fitbands:
+                    magdic[band] = 99.
+            maglist.append(magdic)
+            i += 1
+
+        for comp in lighttemp_models:
+            magdic = {}
+            if amps[i] > 0.:
+                comp.amp *= amps[i]
+                mainmag = comp.Mag(zp[config['main_band']])
+                for band in fitbands:
+                    if band == config['main_band']:
+                        magdic[band] = mainmag
+                    else:
+                        scale = comp.scale(band, config['main_band']) * 10.**(-(zp[config['main_band']] - zp[band])/2.5)
+                        if (scale != scale) or not np.isfinite(scale) or (scale == 0.):
+                            magdic[band] = 99.
+                        else:
+                            magdic[band] = mainmag - 2.5*np.log10(scale)
             else:
                 for band in fitbands:
                     magdic[band] = 99.
@@ -907,6 +1085,11 @@ if key is None:
     for i in range(nlight):
         for band in fitbands:
             outchain['light%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
+
+    for i in range(nltemp):
+        for band in fitbands:
+            outchain['lighttemp%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
+
     for i in range(nsource):
         for band in fitbands:
             outchain['source%d.mag_%s'%(i+1, band)] = np.zeros((nwalkers, config['Nsteps']))
@@ -916,6 +1099,8 @@ if key is None:
             for band in fitbands:
                 for l in range(nlight):
                     outchain['light%d.mag_%s'%(l+1, band)][j, i] = magschain[i][j][l][band]
+                for l in range(nltemp):
+                    outchain['lighttemp%d.mag_%s'%(l+1, band)][j, i] = magschain[i][j][l][band]
                 for s in range(nsource):
                     outchain['source%d.mag_%s'%(s+1, band)][j, i] = magschain[i][j][nlight+s][band]
     
